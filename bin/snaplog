@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# snaplog — save the milestones of a build as git snapshots, with a human-readable log.
+# https://github.com/spacecaret/snaplog  (MIT)
+set -euo pipefail
+VERSION="0.1.0"
+
+usage() {
+cat <<'U'
+snaplog — milestone snapshots for any project (git commit + tag + BUILD_LOG.md row)
+
+  snaplog init [--chapters]                 enable snapshots in this project
+  snaplog "title" [-k kind] [-n "note"] [-c "Chapter"]
+                                            save a snapshot
+        kinds: baseline | broke | fixed | milestone (default) | result | any word
+  snaplog list                              list snapshots
+  snaplog chapter <tag> "Title"             mark an existing snapshot as a chapter
+  snaplog chapters                          list chapters
+  snaplog open <tag>                        check an old snapshot out as a runnable copy
+  snaplog --version | --help
+
+env: SNAPLOG_DIR   where `open` puts copies (default: ~/.snaplog)
+     SNAPLOG_ALLOW_SECRETS=1   skip the secret-file check
+U
+}
+
+# portable in-place sed (GNU and BSD)
+sedi() { local f="${@: -1}"; local tmp; tmp=$(mktemp); sed "${@:1:$#-1}" "$f" > "$tmp" && cat "$tmp" > "$f"; rm -f "$tmp"; }
+
+cmd="${1:-}"
+case "$cmd" in ""|-h|--help|help) usage; exit 0;; -V|--version|version) echo "snaplog $VERSION"; exit 0;; esac
+
+root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+cd "$root"; proj=$(basename "$root")
+
+if [ "$cmd" = init ]; then
+  ch=off; [ "${2:-}" = "--chapters" ] && ch=on
+  printf 'snapshots=on\nchapters=%s\n' "$ch" > .snap
+  [ -d .git ] || git init -q
+  exec "$0" "baseline" -k baseline -n "project start (chapters=$ch)"
+fi
+
+if [ "$cmd" = chapter ]; then
+  tag="${2:?usage: snaplog chapter <tag> \"Title\"}"; ct="${3:?chapter title}"
+  git rev-parse -q --verify "refs/tags/$tag" >/dev/null || { echo "no such tag: $tag" >&2; exit 1; }
+  cn=$(( $(grep -c "Ch [0-9]" BUILD_LOG.md 2>/dev/null || true) + 1 ))
+  sedi -E "/\`$tag\`/ s/\| ([^|]*) \|\$/| [Ch $cn: $ct] \1 |/" BUILD_LOG.md
+  grep "$tag" BUILD_LOG.md; exit 0
+fi
+if [ "$cmd" = chapters ]; then grep -h "Ch [0-9]" BUILD_LOG.md 2>/dev/null || echo "no chapters yet"; exit 0; fi
+if [ "$cmd" = list ]; then git tag -l 'b[0-9]*' -n1; exit 0; fi
+
+if [ "$cmd" = open ]; then
+  tag="${2:?usage: snaplog open <tag>}"
+  git rev-parse -q --verify "refs/tags/$tag" >/dev/null || { echo "no such tag: $tag" >&2; exit 1; }
+  base="${SNAPLOG_DIR:-$HOME/.snaplog}"; dest="$base/$proj-$tag"
+  mkdir -p "$base"
+  [ -d "$dest" ] || git worktree add "$dest" "$tag" >/dev/null 2>&1 || { echo "could not create $dest" >&2; exit 1; }
+  echo "$dest"
+  echo "(dependencies are not copied: reinstall there, or symlink node_modules/.venv from $root)"
+  exit 0
+fi
+
+# ---- save a snapshot ----
+title="$cmd"; shift; kind=milestone; note=""; chap=""
+while getopts "k:n:c:" o; do case $o in k) kind=$OPTARG;; n) note=$OPTARG;; c) chap=$OPTARG;; *) usage; exit 1;; esac; done
+[ -n "$title" ] || { usage; exit 1; }
+kind=$(echo "$kind" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g;s/^-//;s/-$//')
+[ -n "$kind" ] || kind=milestone
+
+if [ -n "$chap" ]; then
+  cn=$(( $(grep -c "Ch [0-9]" BUILD_LOG.md 2>/dev/null || true) + 1 ))
+  note="[Ch $cn: $chap] $note"
+fi
+note=$(printf '%s' "$note" | tr '\n|' '  ')   # keep the table row intact
+
+[ -d .git ] || git init -q
+if [ ! -f .gitignore ]; then
+  printf 'node_modules/\ndist/\n.DS_Store\n__pycache__/\n*.pyc\n.venv/\n.env\n.env.*\n*.pt\n*.pth\n*.ckpt\n*.log\n' > .gitignore
+fi
+
+# safety: never snapshot obvious secrets
+if [ -z "${SNAPLOG_ALLOW_SECRETS:-}" ]; then
+  bad=$(git ls-files -co --exclude-standard | grep -E '(^|/)(\.env(\..*)?|.*\.pem|.*\.key|id_(rsa|ed25519)[^/]*|credentials(\.json)?|.*\.p12)$' || true)
+  if [ -n "$bad" ]; then
+    echo "snaplog: refusing to snapshot, these look like secrets:" >&2; echo "$bad" | sed 's/^/  /' >&2
+    echo "add them to .gitignore, or set SNAPLOG_ALLOW_SECRETS=1 to override." >&2; exit 1
+  fi
+fi
+
+n=$(( $(git tag -l 'b[0-9]*' | wc -l | tr -d ' ') + 1 ))
+slug=$(echo "$title" | tr '[:upper:]' '[:lower:]' | sed -E "s/[^a-z0-9]+/-/g;s/^-//;s/-$//" | cut -c1-40)
+tag=$(printf 'b%02d-%s-%s' "$n" "$kind" "$slug")
+day=$(date +%y%m%d)
+
+if [ ! -f BUILD_LOG.md ]; then
+  printf '# BUILD_LOG — %s\n\nEach row is a runnable snapshot. Open one: `snaplog open <tag>`\n\n| tag | date | kind | what | note (why it broke / how it was fixed) |\n|---|---|---|---|---|\n' "$proj" > BUILD_LOG.md
+fi
+printf '| `%s` | %s | %s | %s | %s |\n' "$tag" "$day" "$kind" "$(printf '%s' "$title" | tr '|' ' ')" "$note" >> BUILD_LOG.md
+
+git add -A
+git commit -q --allow-empty -m "[$kind] $title${note:+
+
+$note}"
+git tag -a "$tag" -m "$title"
+echo "saved $tag"
