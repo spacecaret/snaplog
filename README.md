@@ -20,9 +20,13 @@ The interesting parts of a build are the broken ones, and they vanish when you f
 
 ## Install
 
+**Easiest:** paste this repo's link into your coding agent (Claude Code, Codex, Cursor) and say "set this up". It will clone it, run the installer and add the skill.
+
+**By hand:**
+
 ```bash
 git clone https://github.com/spacecaret/snaplog.git
-cd snaplog && ./install.sh        # copies bin/snaplog to ~/.local/bin
+cd snaplog && ./install.sh --skill   # --skill also installs the agent skill; drop it if you don't use one
 ```
 
 Make sure `~/.local/bin` is on your `PATH`. Or just copy `bin/snaplog` anywhere you like.
@@ -48,7 +52,7 @@ Make sure `~/.local/bin` is on your `PATH`. Or just copy `bin/snaplog` anywhere 
 
 ## Use it with an AI coding agent
 
-Copy `skill/SKILL.md` into `~/.claude/skills/snaplog/` (Claude Code) or paste its text into your agent's instructions. The agent will then snapshot at the right moments without being asked.
+`./install.sh --skill` installs `skill/SKILL.md` for Claude Code. For other agents, paste its text into the agent's instructions. The agent then snapshots at the right moments without being asked.
 
 ## License
 
